@@ -3,6 +3,7 @@ const state = { tab: 'paste', rows: [], columns: [], results: [], exportSource: 
 const hints = {
   rule: '规则仅作关键词演示，不能可靠理解语义或否定，结果需要人工复核。',
   jev: '文本将发送至第三方 OpenRouter；请先脱敏并确认符合机构隐私要求。',
+  jevstyle: 'JevStyle 非 TypeSafe 官方服务；文本将发送至第三方，请先脱敏并确认符合机构隐私要求。',
   local: '文本发送至本机配置的模型服务；请确认服务运行及数据处理方式。'
 };
 
@@ -122,11 +123,22 @@ async function classify() {
     if (!entries.length) return feedback('所选列没有可分类的内容。', true);
   }
   if (mode === 'jev' && !window.confirm('在线 Jev 会将小结文本发送至第三方 OpenRouter。请确认已完成脱敏并符合机构要求，是否继续？')) return;
+  if (mode === 'jevstyle' && !window.confirm('JevStyle 非 TypeSafe 官方服务，会将小结文本发送至第三方。请确认已完成脱敏并符合机构要求，是否继续？')) return;
+  const jevKey = mode === 'jev' ? $('jev-key').value : '';
+  const jevstyleKey = mode === 'jevstyle' ? $('jevstyle-key').value : '';
+  const activeKey = jevKey || jevstyleKey;
+  const redact = (value) => {
+    let text = String(value);
+    for (const key of new Set([activeKey, activeKey.trim()])) if (key) text = text.split(key).join('[已隐藏]');
+    return text;
+  };
   state.running = true;
   state.results = [];
   state.exportSource = state.tab === 'upload' ? { columns: [...state.columns], rows: state.rows.map((row) => ({ ...row })) } : null;
   $('classify-button').disabled = true;
   $('mode-select').disabled = true;
+  $('jev-key').disabled = true;
+  $('jevstyle-key').disabled = true;
   $('column-select').disabled = true;
   $('file-input').disabled = true;
   $('clear-file').disabled = true;
@@ -141,17 +153,20 @@ async function classify() {
   for (const entry of entries) {
     feedback(`正在处理 ${state.results.length + 1} / ${entries.length} 条…`);
     try {
-      const result = await request('/api/classify', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text: entry.text, mode }) });
+      const payload = { text: entry.text, mode };
+      if (mode === 'jev' && jevKey) payload.openrouter_api_key = jevKey;
+      if (mode === 'jevstyle' && jevstyleKey.trim()) payload.jevstyle_api_key = jevstyleKey;
+      const result = await request('/api/classify', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
       if (!Array.isArray(result.categories) || typeof result.review !== 'boolean') throw new Error('分类结果格式无效。');
-      state.results.push({ ...entry, mode, categories: result.categories.filter((category) => typeof category === 'string'), keywords: Array.isArray(result.matched_keywords) ? result.matched_keywords : [], error: '' });
+      state.results.push({ ...entry, mode, categories: result.categories.filter((category) => typeof category === 'string').map(redact), keywords: Array.isArray(result.matched_keywords) ? result.matched_keywords.map(redact) : [], error: '' });
     } catch (error) {
       failed += 1;
-      state.results.push({ ...entry, mode, categories: [], keywords: [], error: error.message || '分类失败' });
+      state.results.push({ ...entry, mode, categories: [], keywords: [], error: redact(error.message || '分类失败') });
     }
     renderResults();
   }
   state.running = false;
-  for (const id of ['classify-button', 'mode-select', 'column-select', 'file-input', 'clear-file', 'note-text', 'sample-button', 'sample2-button', 'paste-tab', 'upload-tab']) $(id).disabled = false;
+  for (const id of ['classify-button', 'mode-select', 'jev-key', 'jevstyle-key', 'column-select', 'file-input', 'clear-file', 'note-text', 'sample-button', 'sample2-button', 'paste-tab', 'upload-tab']) $(id).disabled = false;
   $('status-label').textContent = failed ? '处理完成，有失败' : '处理完成';
   renderResults();
   feedback(`处理完成：成功 ${entries.length - failed} 条${failed ? `，失败 ${failed} 条` : ''}。请逐条人工复核。`, failed > 0);
@@ -196,7 +211,7 @@ $('upload-tab').addEventListener('click', () => setTab('upload'));
 $('sample-button').addEventListener('click', () => { $('note-text').value = '患者于透析2小时40分钟突感下肢疼痛，予以回氯化0.9%氯化钠300毫升后缓解。'; $('note-text').dispatchEvent(new Event('input')); });
 $('sample2-button').addEventListener('click', () => { $('note-text').value = '患者透析1小时感觉头痛，测血压175的95毫米汞柱，予以硝苯地平片10毫克舌下含服后感头痛缓解。'; $('note-text').dispatchEvent(new Event('input')); });
 $('note-text').addEventListener('input', () => { $('char-count').textContent = `${$('note-text').value.length.toLocaleString()} / 30,000`; });
-$('mode-select').addEventListener('change', () => { $('mode-hint').lastChild.textContent = hints[$('mode-select').value]; });
+$('mode-select').addEventListener('change', () => { $('mode-hint').lastChild.textContent = hints[$('mode-select').value]; $('jev-key-section').hidden = $('mode-select').value !== 'jev'; $('jevstyle-key-section').hidden = $('mode-select').value !== 'jevstyle'; });
 $('file-input').addEventListener('change', (event) => importFile(event.target.files[0]));
 $('clear-file').addEventListener('click', () => { state.rows = []; state.columns = []; $('import-details').hidden = true; $('column-select').replaceChildren(); feedback(''); });
 $('classify-button').addEventListener('click', classify);
