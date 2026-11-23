@@ -138,6 +138,56 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(len(call.call_args.args[1]["questions"]), 19)
         self.assertEqual(call.call_args.args[1]["model"], "typesafe/jev-1.14")
 
+    def test_jev_request_key_precedence_and_fallback(self):
+        response = {"model": "jev-test", "answers": {"c" + str(index): {"type": "noul", "noul": 0.1} for index in range(19)}}
+        with patch.dict(os.environ, {"OPENROUTER_API_KEY": "environment-key"}), patch.object(server, "post_json", return_value=response) as call:
+            for key, expected in [(" request-key ", "request-key"), ("", "environment-key"), ("   ", "environment-key")]:
+                with self.subTest(key=key):
+                    status, result = self.json_request("/api/classify", {"mode": "jev", "text": "测试", "openrouter_api_key": key})
+                    self.assertEqual(status, 200)
+                    self.assertEqual(call.call_args.args[2], expected)
+                    self.assertNotIn(expected, json.dumps(result, ensure_ascii=False))
+                    self.assertEqual(os.environ["OPENROUTER_API_KEY"], "environment-key")
+
+    def test_jev_key_validation(self):
+        with patch.dict(os.environ, {"OPENROUTER_API_KEY": "environment-key"}), patch.object(server, "post_json") as call:
+            for key in [None, 123, [], {}, "a\nb", "a\rb", "a\tb", "a b", "密钥", "x" * 4097]:
+                with self.subTest(key=repr(key)[:50]):
+                    status, result = self.json_request("/api/classify", {"mode": "jev", "text": "测试", "openrouter_api_key": key})
+                    self.assertEqual(status, 400)
+                    self.assertNotIn(str(key), result["error"])
+            for mode in ("rule", "local"):
+                self.assertEqual(self.json_request("/api/classify", {"mode": mode, "text": "测试", "openrouter_api_key": "request-key"})[0], 400)
+            call.assert_not_called()
+        with patch.dict(os.environ, {"OPENROUTER_API_KEY": ""}):
+            self.assertEqual(self.json_request("/api/classify", {"mode": "jev", "text": "测试", "openrouter_api_key": " "})[0], 503)
+
+    def test_jev_upstream_model_does_not_echo_key(self):
+        response = {"model": "request-key", "answers": {"c" + str(index): {"type": "noul", "noul": 0.1} for index in range(19)}}
+        with patch.object(server, "post_json", return_value=response):
+            status, result = self.json_request("/api/classify", {"mode": "jev", "text": "测试", "openrouter_api_key": "request-key"})
+        self.assertEqual(status, 200)
+        self.assertNotIn("request-key", json.dumps(result, ensure_ascii=False))
+
+    def test_jev_sends_key_in_authorization_header(self):
+        response = {"answers": {"c" + str(index): {"type": "noul", "noul": 0.1} for index in range(19)}}
+        received = {}
+
+        class FakeOpener:
+            def open(self, request, timeout):
+                received["url"] = request.full_url
+                received["authorization"] = request.get_header("Authorization")
+                received["body"] = json.loads(request.data)
+                return io.BytesIO(json.dumps(response).encode())
+
+        with patch.object(server.urllib.request, "build_opener", return_value=FakeOpener()):
+            status, result = self.json_request("/api/classify", {"mode": "jev", "text": "测试", "openrouter_api_key": "request-key"})
+        self.assertEqual(status, 200)
+        self.assertEqual(received["url"], server.JEV_URL)
+        self.assertEqual(received["authorization"], "Bearer request-key")
+        self.assertNotIn("request-key", json.dumps(received["body"], ensure_ascii=False))
+        self.assertNotIn("request-key", json.dumps(result, ensure_ascii=False))
+
     def test_local_protocol(self):
         response = {"model": "local-test", "choices": [{"message": {"content": '["头痛", "高血压"]'}}]}
         with patch.dict(os.environ, {"LOCAL_MODEL_BASE_URL": "http://127.0.0.1:1234/v1"}), patch.object(server, "post_json", return_value=response) as call:
@@ -208,6 +258,101 @@ class ServerTests(unittest.TestCase):
         for content in ('["头痛", "头痛"]', '["不存在"]', '{"categories": []}'):
             with self.subTest(content=content), patch.object(server, "post_json", return_value={"choices": [{"message": {"content": content}}]}):
                 self.assertEqual(self.json_request("/api/classify", {"mode": "local", "text": "头痛"})[0], 502)
+
+    def test_jevstyle_contract_and_key_precedence(self):
+        received = []
+        response = {"model": "jev-style-2b-decision-v4", "answers": {"c0": {"type": "noul", "noul": 0.5}, "c1": {"type": "noul", "noul": 0.8}}}
+
+        class FakeOpener:
+            def open(self, request, timeout):
+                received.append((request.full_url, request.method, request.get_header("Authorization"), json.loads(request.data), timeout))
+                return io.BytesIO(json.dumps(response).encode())
+
+        with patch.dict(os.environ, {"JEVSTYLE_API_KEY": "environment-key", "OPENROUTER_API_KEY": "other-key", "JEVSTYLE_URL": "http://evil.example"}), patch.object(server.urllib.request, "build_opener", return_value=FakeOpener()):
+            for key, expected in [(" page-key ", "page-key"), ("", "environment-key")]:
+                status, result = self.json_request("/api/classify", {"mode": "jevstyle", "text": "头痛和头晕", "categories": ["头痛", "头晕"], "jevstyle_api_key": key})
+                self.assertEqual((status, result["categories"], result["review"], result["model"]), (200, ["头痛", "头晕"], True, "jev-style-2b-decision-v4"))
+                url, method, authorization, body, timeout = received[-1]
+                self.assertEqual((url, method, authorization, timeout), ("https://api.jevstyle.com/v1/systemone", "POST", "Bearer " + expected, 45))
+                self.assertEqual(set(body), {"state", "questions"})
+                self.assertEqual(body["state"], "头痛和头晕")
+                self.assertEqual(set(body["questions"]), {"c0", "c1"})
+                self.assertTrue(all(set(question) == {"type", "instructions"} and question["type"] == "noul" for question in body["questions"].values()))
+                self.assertNotIn(expected, json.dumps(body, ensure_ascii=False))
+                self.assertNotIn(expected, json.dumps(result, ensure_ascii=False))
+
+    def test_jevstyle_validation_and_limit(self):
+        with patch.dict(os.environ, {"JEVSTYLE_API_KEY": "environment-key"}), patch.object(server, "post_json") as call:
+            for key in [None, 123, "bad key", "x\ny", "密钥", "x" * 4097]:
+                with self.subTest(key=repr(key)[:30]):
+                    self.assertEqual(self.json_request("/api/classify", {"mode": "jevstyle", "text": "测试", "jevstyle_api_key": key})[0], 400)
+            for mode in ("jev", "rule", "local"):
+                self.assertEqual(self.json_request("/api/classify", {"mode": mode, "text": "测试", "jevstyle_api_key": "secret"})[0], 400)
+            self.assertEqual(self.json_request("/api/classify", {"mode": "jevstyle", "text": "测试", "openrouter_api_key": "secret"})[0], 400)
+            self.assertEqual(self.json_request("/api/classify", {"mode": "jevstyle", "text": "患" * 3000})[0], 413)
+            self.assertEqual(self.json_request("/api/classify", {"mode": "jevstyle", "text": "短", "categories": [{"name": str(i), "description": "长" * 1000} for i in range(10)]})[0], 413)
+            call.assert_not_called()
+        with patch.dict(os.environ, {"JEVSTYLE_API_KEY": "", "OPENROUTER_API_KEY": "not-used"}), patch.object(server, "post_json") as call:
+            self.assertEqual(self.json_request("/api/classify", {"mode": "jevstyle", "text": "测试"})[0], 503)
+            call.assert_not_called()
+
+    def test_jevstyle_invalid_response_and_privacy(self):
+        valid = {"c0": {"type": "noul", "noul": 0.2}, "c1": {"type": "noul", "noul": 0.7}}
+        for bad in [None, True, -0.1, 1.1, float("nan"), float("inf"), "0.5"]:
+            answers = dict(valid, c0={"type": "noul", "noul": bad})
+            with self.subTest(bad=bad), patch.object(server, "post_json", return_value={"answers": answers}):
+                self.assertEqual(self.json_request("/api/classify", {"mode": "jevstyle", "text": "私人记录", "categories": ["甲", "乙"], "jevstyle_api_key": "secret"})[0], 502)
+        for answers in [{}, {"c0": valid["c0"]}, dict(valid, c0={"type": "choice", "noul": 0.5})]:
+            with patch.object(server, "post_json", return_value={"answers": answers}):
+                self.assertEqual(self.json_request("/api/classify", {"mode": "jevstyle", "text": "私人记录", "categories": ["甲", "乙"], "jevstyle_api_key": "secret"})[0], 502)
+        with patch.object(server, "post_json", return_value={"answers": valid, "model": "secret 私人记录"}):
+            status, result = self.json_request("/api/classify", {"mode": "jevstyle", "text": "私人记录", "categories": ["甲", "乙"], "jevstyle_api_key": "secret"})
+            self.assertEqual((status, result["model"]), (200, "未知"))
+            self.assertNotIn("secret", json.dumps(result, ensure_ascii=False))
+            self.assertNotIn("私人记录", json.dumps(result, ensure_ascii=False))
+
+    def test_jevstyle_http_errors_are_sanitized(self):
+        for code, expected in [(401, 502), (413, 413), (429, 429), (500, 502), (302, 502)]:
+            error = urllib.error.HTTPError(server.JEVSTYLE_URL, code, "secret 私人记录", {"Retry-After": "7"}, io.BytesIO(b"secret"))
+            with self.subTest(code=code), patch.object(server.urllib.request, "build_opener") as build:
+                build.return_value.open.side_effect = error
+                with self.assertRaises(server.APIError) as caught:
+                    server.post_json(server.JEVSTYLE_URL, {"state": "私人记录"}, "secret")
+                self.assertEqual(caught.exception.status, expected)
+                self.assertNotIn("secret", caught.exception.message)
+                self.assertNotIn("私人记录", caught.exception.message)
+                if code == 429:
+                    self.assertIn("7", caught.exception.message)
+                self.assertTrue(any(isinstance(handler, server.NoRedirect) for handler in build.call_args.args))
+        for failure in [urllib.error.URLError("secret 私人记录"), TimeoutError("secret"), OSError("secret")]:
+            with patch.object(server.urllib.request, "build_opener") as build:
+                build.return_value.open.side_effect = failure
+                with self.assertRaises(server.APIError) as caught:
+                    server.post_json(server.JEVSTYLE_URL, {"state": "私人记录"}, "secret")
+                self.assertEqual(caught.exception.status, 502)
+                self.assertNotIn("secret", caught.exception.message)
+                self.assertNotIn("私人记录", caught.exception.message)
+        for body in [b"not json", b"[]", b"x" * (server.MAX_UPSTREAM + 1)]:
+            with patch.object(server.urllib.request, "build_opener") as build:
+                build.return_value.open.return_value = io.BytesIO(body)
+                with self.assertRaises(server.APIError) as caught:
+                    server.post_json(server.JEVSTYLE_URL, {}, "secret")
+                self.assertEqual(caught.exception.status, 502)
+
+    def test_jevstyle_page_delivery(self):
+        with urllib.request.urlopen(self.url + "/") as response:
+            html = response.read().decode()
+            self.assertEqual(response.headers["Cache-Control"], "no-store")
+        with urllib.request.urlopen(self.url + "/app.js") as response:
+            script = response.read().decode()
+        self.assertEqual(html.count('<option value="jevstyle">'), 1)
+        self.assertIn('id="jevstyle-key"', html)
+        self.assertNotIn("当前后端尚未支持此模式", html)
+        self.assertIn("JEVSTYLE_API_KEY", html)
+        self.assertIn("payload.jevstyle_api_key = jevstyleKey", script)
+        self.assertNotIn("请输入 JevStyle API 密钥。", script)
+        self.assertIn("第三方", script)
+        self.assertIn("模型版本：${item.model}", script)
 
 
 if __name__ == "__main__":

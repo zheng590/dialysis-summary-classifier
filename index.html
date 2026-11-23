@@ -6,6 +6,7 @@
   <meta name="theme-color" content="#f5f7f5">
   <title>透析小结分类工作台</title>
   <link rel="stylesheet" href="/style.css">
+  <link rel="stylesheet" href="/key-input.css">
   <script src="/app.js" defer></script>
 </head>
 <body>
@@ -20,7 +21,7 @@
       <div><div class="eyebrow"><span></span> DIALYSIS NOTES WORKSPACE</div><h1>小结分类，<em>清晰有序。</em></h1><p>把繁琐的记录整理交给工具，把更多时间留给专业判断。</p></div>
       <div class="intro-side"><span class="intro-side-icon">✳</span><div><strong>辅助整理，不替代诊断</strong><small>所有分类结果均需人工复核</small></div></div>
     </section>
-    <div class="notice"><span class="notice-icon">!</span><div><strong>隐私与使用提示</strong><span>请先去除姓名、身份证号等可识别信息。在线 Jev 模式会将文本发送至第三方服务；规则仅为关键词演示，结果不可用于临床决策。</span></div></div>
+    <div class="notice"><span class="notice-icon">!</span><div><strong>隐私与使用提示</strong><span>请先去除姓名、身份证号等可识别信息。在线模式会将文本发送至第三方服务；规则仅为关键词演示，结果不可用于临床决策。</span></div></div>
     <div class="workspace">
       <section class="panel input-panel" aria-labelledby="input-title">
         <div class="section-heading"><div><div class="section-kicker"><span>01</span> INPUT</div><h2 id="input-title">准备小结内容</h2><p>粘贴单条记录，或导入文件进行批量处理。</p></div><span class="heading-icon">↗</span></div>
@@ -36,7 +37,7 @@
           <div class="import-details" id="import-details" hidden><div class="file-info"><span class="file-icon">▤</span><div><strong id="file-name"></strong><small id="file-count"></small></div><button type="button" id="clear-file" aria-label="移除文件">×</button></div><label for="column-select">选择包含小结的列</label><select id="column-select"></select><p class="field-hint">空白小结将跳过；编号按导入的非空记录计算。</p></div>
           <p class="upload-note">XLSX 读取活动工作表，需在服务端安装 openpyxl。</p>
         </div>
-        <div class="mode-section"><div class="field-label"><label for="mode-select">分类方式</label><span class="recommended">规则演示</span></div><select id="mode-select"><option value="rule">规则演示 · 关键词匹配</option><option value="jev">在线 Jev · 第三方模型</option><option value="local">本地模型 · OpenAI 兼容接口</option></select><p class="mode-hint" id="mode-hint"><span class="hint-dot"></span>规则仅作关键词演示，不能可靠理解语义或否定，结果需要人工复核。</p><p class="upload-note">分类范围：低血压、高血压、低血糖、肌肉痉挛、疲乏、瘙痒、胸闷、头痛、头晕、出汗、恶心、发热、腹痛、腹泻、呕吐、皮疹、气短、心悸、腰背痛。</p></div>
+        <div class="mode-section"><div class="field-label"><label for="mode-select">分类方式</label><span class="recommended">规则演示</span></div><select id="mode-select"><option value="rule">规则演示 · 关键词匹配</option><option value="jev">在线 Jev · OpenRouter</option><option value="jevstyle">JevStyle · 第三方服务</option><option value="local">本地模型 · OpenAI 兼容接口</option></select><p class="mode-hint" id="mode-hint"><span class="hint-dot"></span>规则仅作关键词演示，不能可靠理解语义或否定，结果需要人工复核。</p><div id="jev-key-section" hidden><div class="field-label"><label for="jev-key">OpenRouter API 密钥</label></div><input id="jev-key" type="password" maxlength="4096" autocomplete="off" spellcheck="false" placeholder="留空使用服务端环境变量" aria-describedby="jev-key-hint"><p class="upload-note" id="jev-key-hint">仅在分类请求时发送；留空使用服务端环境变量，不保存到导出文件。</p></div><div id="jevstyle-key-section" hidden><div class="field-label"><label for="jevstyle-key">JevStyle API 密钥</label></div><input id="jevstyle-key" type="password" maxlength="4096" autocomplete="off" spellcheck="false" placeholder="留空使用 JEVSTYLE_API_KEY" aria-describedby="jevstyle-key-hint"><p class="upload-note" id="jevstyle-key-hint">页面密钥优先，留空使用服务端 JEVSTYLE_API_KEY；页面密钥仅保留在当前页面，分类时发送至本机服务，请勿写入小结或导入文件。</p><p class="upload-note">JevStyle 非 TypeSafe 官方服务，文本将发送至第三方；请先脱敏并确认隐私及数据传输要求。</p></div><p class="upload-note">分类范围：低血压、高血压、低血糖、肌肉痉挛、疲乏、瘙痒、胸闷、头痛、头晕、出汗、恶心、发热、腹痛、腹泻、呕吐、皮疹、气短、心悸、腰背痛。</p></div>
         <button class="primary-button" id="classify-button" type="button"><span>开始分类</span><span>→</span></button>
         <p class="button-footnote"><span>◇</span> 本工具仅供记录整理与辅助参考</p>
       </section>
